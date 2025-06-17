@@ -23,6 +23,9 @@ const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
 
+// API Configuration
+const APIIP_KEY = '8ddc638d-4e0f-4185-b648-782c978f9aa2';
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -179,126 +182,90 @@ function migrateExistingLinks() {
 }
 
 
-// Hàm lấy thông tin IP với API chính xác cao
+// Hàm lấy thông tin IP với API apiip.net chính xác cao
 async function getIPInfo(ip) {
   try {
-    // API 1: ipapi.co - Khá chính xác cho Việt Nam  
-    const response1 = await axios.get(`https://ipapi.co/${ip}/json/`, {
-      timeout: 5000,
+    // API 1: apiip.net - API premium với key riêng, rất chính xác cho Việt Nam
+    const response1 = await axios.get(`https://apiip.net/api/check?ip=${ip}&accessKey=${APIIP_KEY}`, {
+      timeout: 8000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
     if (response1.data && response1.data.city && !response1.data.error) {
-      let result = {
+      const result = {
         latitude: response1.data.latitude,
         longitude: response1.data.longitude,
         city: response1.data.city,
-        region: response1.data.region,
-        country_name: response1.data.country_name,
-        country_code: response1.data.country_code,
-        timezone: response1.data.timezone,
-        isp: response1.data.org,
-        source: 'ipapi.co'
+        region: response1.data.regionName || response1.data.region,
+        country_name: response1.data.countryName,
+        country_code: response1.data.countryCode,
+        timezone: response1.data.timeZone,
+        isp: response1.data.isp,
+        source: 'apiip.net'
       };
       
-      // Fix đặc biệt cho IP Gia Lai bị hiển thị sai
-      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
-        result = {
-          ...result,
-          city: 'Pleiku',
-          region: 'Gia Lai',
-          latitude: 13.9833,
-          longitude: 108.0,
-          corrected: true,
-          original_city: result.city
-        };
+      console.log(`✅ apiip.net result: ${result.city}, ${result.region}`);
+      return result;
+    }
+  } catch (error) {
+    console.log('apiip.net failed, trying backup API...');
+  }
+
+  try {
+    // API 2: ipapi.co - Backup
+    const response2 = await axios.get(`https://ipapi.co/${ip}/json/`, {
+      timeout: 5000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
+    });
+    
+    if (response2.data && response2.data.city && !response2.data.error) {
+      const result = {
+        latitude: response2.data.latitude,
+        longitude: response2.data.longitude,
+        city: response2.data.city,
+        region: response2.data.region,
+        country_name: response2.data.country_name,
+        country_code: response2.data.country_code,
+        timezone: response2.data.timezone,
+        isp: response2.data.org,
+        source: 'ipapi.co'
+      };
       
       console.log(`✅ ipapi.co result: ${result.city}, ${result.region}`);
       return result;
     }
   } catch (error) {
-    console.log('ipapi.co failed, trying backup...');
+    console.log('ipapi.co failed, trying final backup...');
   }
 
   try {
-    // API 2: ip-api.com - Backup chính xác
-    const response2 = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,region,regionName,city,lat,lon,timezone,isp,org`, {
+    // API 3: ip-api.com - Final backup
+    const response3 = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,region,regionName,city,lat,lon,timezone,isp,org`, {
       timeout: 5000
     });
     
-    if (response2.data && response2.data.status === 'success') {
-      let result = {
-        latitude: response2.data.lat,
-        longitude: response2.data.lon,
-        city: response2.data.city,
-        region: response2.data.regionName,
-        country_name: response2.data.country,
-        country_code: response2.data.countryCode,
-        timezone: response2.data.timezone,
-        isp: response2.data.isp || response2.data.org,
+    if (response3.data && response3.data.status === 'success') {
+      const result = {
+        latitude: response3.data.lat,
+        longitude: response3.data.lon,
+        city: response3.data.city,
+        region: response3.data.regionName,
+        country_name: response3.data.country,
+        country_code: response3.data.countryCode,
+        timezone: response3.data.timezone,
+        isp: response3.data.isp || response3.data.org,
         source: 'ip-api.com'
       };
-      
-      // Fix cho IP Gia Lai
-      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
-        result = {
-          ...result,
-          city: 'Pleiku',
-          region: 'Gia Lai',
-          latitude: 13.9833,
-          longitude: 108.0,
-          corrected: true,
-          original_city: result.city
-        };
-      }
       
       console.log(`✅ ip-api.com result: ${result.city}, ${result.region}`);
       return result;
     }
   } catch (error) {
-    console.log('ip-api.com failed, trying next...');
-  }
-
-  try {
-    // API 3: ipgeolocation.io - Chuyên về Châu Á
-    const response3 = await axios.get(`https://api.ipgeolocation.io/ipgeo?apiKey=free&ip=${ip}`, {
-      timeout: 5000
-    });
-    
-    if (response3.data && response3.data.city) {
-      let result = {
-        latitude: parseFloat(response3.data.latitude),
-        longitude: parseFloat(response3.data.longitude),
-        city: response3.data.city,
-        region: response3.data.state_prov,
-        country_name: response3.data.country_name,
-        country_code: response3.data.country_code2,
-        timezone: response3.data.time_zone?.name,
-        isp: response3.data.isp,
-        source: 'ipgeolocation.io'
-      };
-      
-      // Fix cho IP Gia Lai
-      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
-        result = {
-          ...result,
-          city: 'Pleiku',
-          region: 'Gia Lai',
-          latitude: 13.9833,
-          longitude: 108.0,
-          corrected: true,
-          original_city: result.city
-        };
-      }
-      
-      console.log(`✅ ipgeolocation.io result: ${result.city}, ${result.region}`);
-      return result;
-    }
-  } catch (error) {
-    console.log('All IP APIs failed');
+    console.log('All IP location APIs failed');
   }
 
   return null;
@@ -695,6 +662,42 @@ app.get('/api/test-ip/:ip', async (req, res) => {
     location: result,
     note: result?.corrected ? 'Location was corrected for Vietnamese IP' : 'Original API result'
   });
+});
+
+// API test apiip.net với IP cụ thể
+app.get('/api/test-apiip/:ip', async (req, res) => {
+  const testIP = req.params.ip;
+  console.log(`🧪 Testing apiip.net for IP: ${testIP}`);
+  
+  try {
+    const response = await axios.get(`https://apiip.net/api/check?ip=${testIP}&accessKey=${APIIP_KEY}`, {
+      timeout: 8000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    res.json({
+      ip: testIP,
+      raw_response: response.data,
+      formatted_result: response.data && response.data.city ? {
+        city: response.data.city,
+        region: response.data.regionName || response.data.region,
+        country: response.data.countryName,
+        latitude: response.data.latitude,
+        longitude: response.data.longitude,
+        isp: response.data.isp,
+        timezone: response.data.timeZone
+      } : null,
+      api_source: 'apiip.net'
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      ip: testIP,
+      api_source: 'apiip.net'
+    });
+  }
 });
 
 migrateDatabase();
