@@ -404,8 +404,9 @@ app.get('/track/:linkId', async (req, res) => {
 
 // Hàm xử lý tracking chung
 async function processTracking(req, res, link) {
-    // Cải thiện cách lấy IP thật của user
+    // Cải thiện cách lấy IP thật của user - ưu tiên IPv6 cho độ chính xác cao hơn
     let clientIP = null;
+    let ipType = 'unknown';
     
     // Thử các header theo thứ tự ưu tiên
     const ipHeaders = [
@@ -419,41 +420,93 @@ async function processTracking(req, res, link) {
       'forwarded'
     ];
     
-    // Tìm IP từ headers
+    // Thu thập tất cả IP có thể từ headers
+    let allPossibleIPs = [];
+    
     for (const header of ipHeaders) {
       if (req.headers[header]) {
-        clientIP = req.headers[header];
-        break;
+        // Xử lý trường hợp có nhiều IP trong header
+        const ips = req.headers[header].split(',').map(ip => ip.trim());
+        allPossibleIPs.push(...ips);
       }
     }
     
-    // Fallback về connection IP
-    if (!clientIP) {
-      clientIP = req.connection.remoteAddress || 
-                 req.socket.remoteAddress ||
-                 (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    // Thêm connection IP
+    const connectionIP = req.connection.remoteAddress || 
+                         req.socket.remoteAddress ||
+                         (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    if (connectionIP) {
+      allPossibleIPs.push(connectionIP);
     }
     
-    // Xử lý trường hợp có nhiều IP trong x-forwarded-for (lấy IP đầu tiên - IP gốc)
-    if (clientIP && clientIP.includes(',')) {
-      clientIP = clientIP.split(',')[0].trim();
+    // Loại bỏ IP trùng lặp
+    allPossibleIPs = [...new Set(allPossibleIPs)];
+    
+    // Hàm kiểm tra IPv6 hợp lệ (không phải IPv4-mapped)
+    const isValidIPv6 = (ip) => {
+      const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+      return ipv6Regex.test(ip) && !ip.startsWith('::ffff:');
+    };
+    
+    // Hàm kiểm tra IPv4 hợp lệ
+    const isValidIPv4 = (ip) => {
+      const ipv4Regex = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/;
+      return ipv4Regex.test(ip);
+    };
+    
+    // Hàm kiểm tra IP private
+    const isPrivateIP = (ip) => {
+      if (ip === '::1' || ip === '127.0.0.1') return true;
+      if (ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) return true;
+      if (ip.startsWith('fc00:') || ip.startsWith('fd00:') || ip.startsWith('fe80:')) return true;
+      return false;
+    };
+    
+    // Phân loại IP theo loại và ưu tiên
+    let ipv6Candidates = [];
+    let ipv4Candidates = [];
+    
+    for (let ip of allPossibleIPs) {
+      // Xử lý IPv4 mapped trong IPv6
+      if (ip.startsWith('::ffff:')) {
+        const ipv4 = ip.substr(7);
+        if (isValidIPv4(ipv4) && !isPrivateIP(ipv4)) {
+          ipv4Candidates.push(ipv4);
+        }
+      } 
+      // IPv6 thuần túy (không phải mapped)
+      else if (isValidIPv6(ip) && !isPrivateIP(ip)) {
+        ipv6Candidates.push(ip);
+      } 
+      // IPv4 thuần túy
+      else if (isValidIPv4(ip) && !isPrivateIP(ip)) {
+        ipv4Candidates.push(ip);
+      }
     }
     
-    // Loại bỏ IPv6 prefix nếu có
-    if (clientIP && clientIP.substr(0, 7) === '::ffff:') {
-      clientIP = clientIP.substr(7);
-    }
-    
-    // Loại bỏ port nếu có
-    if (clientIP && clientIP.includes(':') && !clientIP.includes('::')) {
-      clientIP = clientIP.split(':')[0];
-    }
-    
+    // Ưu tiên IPv6 trước, sau đó đến IPv4
+    if (ipv6Candidates.length > 0) {
+      clientIP = ipv6Candidates[0];
+      ipType = 'IPv6';
+      console.log(`🌍 Using IPv6: ${clientIP} (enhanced accuracy expected)`);
+    } else if (ipv4Candidates.length > 0) {
+      clientIP = ipv4Candidates[0];
+      ipType = 'IPv4';
+      console.log(`🌍 Using IPv4: ${clientIP}`);
+    } else {
+      // Fallback về IP đầu tiên nếu không có IP public
+      clientIP = allPossibleIPs[0];
+      if (clientIP && clientIP.startsWith('::ffff:')) {
+        clientIP = clientIP.substr(7);
+      }
+      ipType = isPrivateIP(clientIP) ? 'Private' : 'Fallback';
+      console.log(`⚠️ Using fallback IP: ${clientIP} (${ipType})`);
+    }    
     const userAgent = req.headers['user-agent'];
     
     // Lấy thông tin vị trí từ IP với độ chính xác cao hơn
     let ipInfo;
-    if (clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.') || clientIP.startsWith('172.')) {
+    if (clientIP === '::1' || clientIP === '127.0.0.1' || isPrivateIP(clientIP)) {
       // Sử dụng IP demo để test (IP của Google)
       ipInfo = await getIPInfo('8.8.8.8');
       if (ipInfo) {
@@ -698,6 +751,103 @@ app.get('/api/test-apiip/:ip', async (req, res) => {
       api_source: 'apiip.net'
     });
   }
+});
+
+// API test loại IP hiện tại
+app.get('/api/check-my-ip', (req, res) => {
+  // Logic giống như trong processTracking để lấy IP thật
+  let clientIP = null;
+  let ipType = 'unknown';
+  
+  const ipHeaders = [
+    'cf-connecting-ip',
+    'x-real-ip',
+    'x-forwarded-for',
+    'x-client-ip',
+    'x-forwarded',
+    'x-cluster-client-ip',
+    'forwarded-for',
+    'forwarded'
+  ];
+  
+  let allPossibleIPs = [];
+  
+  for (const header of ipHeaders) {
+    if (req.headers[header]) {
+      const ips = req.headers[header].split(',').map(ip => ip.trim());
+      allPossibleIPs.push(...ips);
+    }
+  }
+  
+  const connectionIP = req.connection.remoteAddress || 
+                       req.socket.remoteAddress ||
+                       (req.connection.socket ? req.connection.socket.remoteAddress : null);
+  if (connectionIP) {
+    allPossibleIPs.push(connectionIP);
+  }
+  
+  allPossibleIPs = [...new Set(allPossibleIPs)];
+  
+  const isValidIPv6 = (ip) => {
+    const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+    return ipv6Regex.test(ip) && !ip.startsWith('::ffff:');
+  };
+  
+  const isValidIPv4 = (ip) => {
+    const ipv4Regex = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/;
+    return ipv4Regex.test(ip);
+  };
+  
+  const isPrivateIP = (ip) => {
+    if (ip === '::1' || ip === '127.0.0.1') return true;
+    if (ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) return true;
+    if (ip.startsWith('fc00:') || ip.startsWith('fd00:') || ip.startsWith('fe80:')) return true;
+    return false;
+  };
+  
+  let ipv6Candidates = [];
+  let ipv4Candidates = [];
+  
+  for (let ip of allPossibleIPs) {
+    if (ip.startsWith('::ffff:')) {
+      const ipv4 = ip.substr(7);
+      if (isValidIPv4(ipv4) && !isPrivateIP(ipv4)) {
+        ipv4Candidates.push(ipv4);
+      }
+    } else if (isValidIPv6(ip) && !isPrivateIP(ip)) {
+      ipv6Candidates.push(ip);
+    } else if (isValidIPv4(ip) && !isPrivateIP(ip)) {
+      ipv4Candidates.push(ip);
+    }
+  }
+  
+  if (ipv6Candidates.length > 0) {
+    clientIP = ipv6Candidates[0];
+    ipType = 'IPv6';
+  } else if (ipv4Candidates.length > 0) {
+    clientIP = ipv4Candidates[0];
+    ipType = 'IPv4';
+  } else {
+    clientIP = allPossibleIPs[0];
+    if (clientIP && clientIP.startsWith('::ffff:')) {
+      clientIP = clientIP.substr(7);
+    }
+    ipType = isPrivateIP(clientIP) ? 'Private' : 'Fallback';
+  }
+  
+  res.json({
+    detectedIP: clientIP,
+    ipType: ipType,
+    allPossibleIPs: allPossibleIPs,
+    ipv6Available: ipv6Candidates,
+    ipv4Available: ipv4Candidates,
+    headers: {
+      'cf-connecting-ip': req.headers['cf-connecting-ip'],
+      'x-real-ip': req.headers['x-real-ip'],
+      'x-forwarded-for': req.headers['x-forwarded-for'],
+      'x-client-ip': req.headers['x-client-ip']
+    }
+  });
 });
 
 migrateDatabase();
