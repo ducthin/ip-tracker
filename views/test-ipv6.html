@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPv6 Priority Test - IP Tracker</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 15px; 
+            padding: 30px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        h1 { 
+            color: #333; 
+            text-align: center; 
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .test-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            border-left: 5px solid #007bff;
+        }
+        .result-box {
+            background: #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+        .ipv6 { border-left-color: #28a745; }
+        .ipv4 { border-left-color: #ffc107; }
+        .btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 16px;
+        }
+        .btn:hover { background: #0056b3; }
+        .btn.ipv6 { background: #28a745; }
+        .btn.ipv4 { background: #ffc107; color: #000; }
+        .status { 
+            display: inline-block; 
+            padding: 5px 10px; 
+            border-radius: 20px; 
+            font-size: 12px; 
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status.ipv6 { background: #d4edda; color: #155724; }
+        .status.ipv4 { background: #fff3cd; color: #856404; }
+        .status.private { background: #f8d7da; color: #721c24; }
+        .loading { color: #666; font-style: italic; }
+        .api-info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌍 IPv6 Priority Test Dashboard</h1>
+        
+        <div class="test-section">
+            <h3>🔍 Current IP Detection <span id="currentStatus" class="status"></span></h3>
+            <button class="btn" onclick="testCurrentIP()">Check My IP</button>
+            <div id="currentResult" class="result-box"></div>
+        </div>
+
+        <div class="test-section ipv6">
+            <h3>🌐 IPv6 Test Examples</h3>
+            <button class="btn ipv6" onclick="testIP('2001:4860:4860::8888', 'Google DNS IPv6')">Google DNS IPv6</button>
+            <button class="btn ipv6" onclick="testIP('2001:4860:4860::8844', 'Google DNS IPv6 Alt')">Google Alt IPv6</button>
+            <button class="btn ipv6" onclick="testApiIP('2001:4860:4860::8888', 'apiip.net IPv6')">Test apiip.net IPv6</button>
+            <div id="ipv6Results" class="result-box"></div>
+        </div>
+
+        <div class="test-section ipv4">
+            <h3>🌐 IPv4 Test Examples</h3>
+            <button class="btn ipv4" onclick="testIP('8.8.8.8', 'Google DNS IPv4')">Google DNS IPv4</button>
+            <button class="btn ipv4" onclick="testIP('118.70.12.1', 'Vietnam IP')">Vietnam IP</button>
+            <button class="btn ipv4" onclick="testApiIP('8.8.8.8', 'apiip.net IPv4')">Test apiip.net IPv4</button>
+            <div id="ipv4Results" class="result-box"></div>
+        </div>        <div class="test-section">
+            <h3>📊 Live Location Comparison</h3>
+            <button class="btn" onclick="compareAPIs()">Compare All APIs</button>
+            <button class="btn" onclick="getRealIP()">Get Real IP</button>
+            <button class="btn" onclick="getIPStats()">IP Statistics</button>
+            <div id="comparisonResult" class="result-box"></div>
+        </div>
+
+        <div class="api-info">
+            <strong>🔧 API Priority Order:</strong>
+            1. apiip.net (primary, supports IPv6) →
+            2. ipapi.co (backup) →
+            3. ip-api.com (fallback) →
+            4. ipgeolocation.io (final fallback)
+        </div>
+    </div>
+
+    <script>
+        async function testCurrentIP() {
+            document.getElementById('currentResult').textContent = 'Loading...';
+            document.getElementById('currentStatus').textContent = 'Loading...';
+            document.getElementById('currentStatus').className = 'status loading';
+            
+            try {
+                const response = await fetch('/api/check-my-ip');
+                const data = await response.json();
+                
+                document.getElementById('currentResult').textContent = JSON.stringify(data, null, 2);
+                
+                const status = document.getElementById('currentStatus');
+                status.textContent = data.ipType;
+                status.className = `status ${data.ipType.toLowerCase()}`;
+            } catch (error) {
+                document.getElementById('currentResult').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function testIP(ip, description) {
+            const isIPv6 = ip.includes(':');
+            const resultDiv = document.getElementById(isIPv6 ? 'ipv6Results' : 'ipv4Results');
+            resultDiv.textContent = `Testing ${description}...`;
+            
+            try {
+                const response = await fetch(`/api/test-ip/${ip}`);
+                const data = await response.json();
+                
+                resultDiv.textContent = `${description}:\n` + JSON.stringify(data, null, 2);
+            } catch (error) {
+                resultDiv.textContent = `Error testing ${description}: ` + error.message;
+            }
+        }
+
+        async function testApiIP(ip, description) {
+            const isIPv6 = ip.includes(':');
+            const resultDiv = document.getElementById(isIPv6 ? 'ipv6Results' : 'ipv4Results');
+            resultDiv.textContent = `Testing ${description}...`;
+            
+            try {
+                const response = await fetch(`/api/test-apiip/${ip}`);
+                const data = await response.json();
+                
+                resultDiv.textContent = `${description}:\n` + JSON.stringify(data, null, 2);
+            } catch (error) {
+                resultDiv.textContent = `Error testing ${description}: ` + error.message;
+            }
+        }        async function compareAPIs() {
+            document.getElementById('comparisonResult').textContent = 'Comparing APIs...';
+            
+            const testIPs = ['8.8.8.8', '2001:4860:4860::8888', '118.70.12.1'];
+            let results = {};
+            
+            for (const ip of testIPs) {
+                try {
+                    const response = await fetch(`/api/test-location/${ip}`);
+                    const data = await response.json();
+                    results[ip] = data;
+                } catch (error) {
+                    results[ip] = { error: error.message };
+                }
+            }
+            
+            document.getElementById('comparisonResult').textContent = JSON.stringify(results, null, 2);
+        }
+
+        async function getRealIP() {
+            document.getElementById('comparisonResult').textContent = 'Getting real IP...';
+            
+            try {
+                const response = await fetch('/api/get-real-ip');
+                const data = await response.json();
+                
+                document.getElementById('comparisonResult').textContent = 
+                    'Real IP Detection:\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('comparisonResult').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function getIPStats() {
+            document.getElementById('comparisonResult').textContent = 'Loading IP statistics...';
+            
+            try {
+                const response = await fetch('/api/ip-stats');
+                const data = await response.json();
+                
+                document.getElementById('comparisonResult').textContent = 
+                    'IP Statistics (Last 7 days):\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('comparisonResult').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function getRealIP() {
+            document.getElementById('comparisonResult').textContent = 'Getting real IP...';
+            
+            try {
+                const response = await fetch('/api/get-real-ip');
+                const data = await response.json();
+                
+                document.getElementById('comparisonResult').textContent = 
+                    'Real IP Detection:\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('comparisonResult').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function getIPStats() {
+            document.getElementById('comparisonResult').textContent = 'Loading IP statistics...';
+            
+            try {
+                const response = await fetch('/api/ip-stats');
+                const data = await response.json();
+                
+                document.getElementById('comparisonResult').textContent = 
+                    'IP Statistics (Last 7 days):\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('comparisonResult').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        // Auto test current IP on page load
+        window.onload = () => {
+            testCurrentIP();
+        };
+    </script>
+</body>
+</html>

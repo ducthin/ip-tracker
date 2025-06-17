@@ -72,6 +72,7 @@ db.run(`
     region TEXT,
     timezone TEXT,
     visited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ip_type TEXT,
     FOREIGN KEY (link_id) REFERENCES tracking_links (link_id)
   )
 `);
@@ -136,13 +137,13 @@ function migrateDatabase() {
     addColumnSafely('short_path', 'TEXT', () => {
       addColumnSafely('custom_domain', 'TEXT', () => {
         addColumnSafely('preview_enabled', 'BOOLEAN DEFAULT 1', () => {
-          addColumnSafely('password', 'TEXT', () => {
-            addColumnSafely('expires_at', 'DATETIME', () => {
+          addColumnSafely('password', 'TEXT', () => {            addColumnSafely('expires_at', 'DATETIME', () => {
               // Đánh dấu migration đã hoàn thành
               db.run("INSERT OR IGNORE INTO migrations (migration_name) VALUES ('add_columns_v1')", (err) => {
                 if (!err) {
                   console.log('✅ Migration completed successfully');
                   migrateExistingLinks();
+                  migrateIPType(); // Chạy migration cho ip_type
                 }
               });
             });
@@ -181,6 +182,41 @@ function migrateExistingLinks() {
   });
 }
 
+// Migration để thêm cột ip_type
+function migrateIPType() {
+  db.get("SELECT * FROM migrations WHERE migration_name = 'add_ip_type_column'", (err, migration) => {
+    if (err || migration) return; // Đã chạy hoặc có lỗi
+    
+    console.log('🔄 Adding ip_type column to visits table...');
+    
+    db.run("ALTER TABLE visits ADD COLUMN ip_type TEXT", (err) => {
+      if (err && !err.message.includes('duplicate column name')) {
+        console.error('Error adding ip_type column:', err);
+        return;
+      }
+      
+      // Cập nhật ip_type cho các record hiện có
+      db.run(`
+        UPDATE visits SET ip_type = 
+          CASE 
+            WHEN ip_address LIKE '%:%' AND ip_address NOT LIKE '::ffff:%' THEN 'IPv6'
+            WHEN ip_address LIKE '::ffff:%' OR ip_address NOT LIKE '%:%' THEN 'IPv4'
+            ELSE 'Unknown'
+          END
+        WHERE ip_type IS NULL
+      `, (err) => {
+        if (err) {
+          console.error('Error updating ip_type:', err);
+        } else {
+          console.log('✅ ip_type column added and populated');
+        }
+        
+        // Đánh dấu migration hoàn thành
+        db.run("INSERT OR IGNORE INTO migrations (migration_name) VALUES ('add_ip_type_column')");
+      });
+    });
+  });
+}
 
 // Hàm lấy thông tin IP với API apiip.net chính xác cao
 async function getIPInfo(ip) {
@@ -363,9 +399,8 @@ app.post('/api/create-link', (req, res) => {
 
 // Route tracking ngắn gọn và uy tín - /:shortPath
 app.get('/:shortPath', async (req, res) => {
-  const shortPath = req.params.shortPath;
-    // Bỏ qua các route system
-  if (['api', 'admin', 'track', 'details', 'favicon.ico', 'robots.txt'].includes(shortPath)) {
+  const shortPath = req.params.shortPath;    // Bỏ qua các route system
+  if (['api', 'admin', 'track', 'details', 'favicon.ico', 'robots.txt', 'test-ipv6', 'analytics'].includes(shortPath)) {
     return res.status(404).render('404');
   }
   
@@ -527,12 +562,13 @@ async function processTracking(req, res, link) {
       country: ipInfo ? ipInfo.country_name : null,
       city: ipInfo ? ipInfo.city : null,
       region: ipInfo ? ipInfo.region : null,
-      timezone: ipInfo ? ipInfo.timezone : null
+      timezone: ipInfo ? ipInfo.timezone : null,
+      ip_type: ipType
     };
     
     db.run(`
-      INSERT INTO visits (link_id, ip_address, user_agent, latitude, longitude, country, city, region, timezone)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)    `, Object.values(visitData), (err) => {
+      INSERT INTO visits (link_id, ip_address, user_agent, latitude, longitude, country, city, region, timezone, ip_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)    `, Object.values(visitData), (err) => {
       // Âm thầm bỏ qua lỗi
     });
     
@@ -850,7 +886,137 @@ app.get('/api/check-my-ip', (req, res) => {
   });
 });
 
+// API để lấy IP công khai thật với ưu tiên IPv6
+app.get('/api/get-real-ip', async (req, res) => {
+  try {
+    // Thử lấy IPv6 trước
+    let ipv6 = null;
+    let ipv4 = null;
+    
+    try {
+      const ipv6Response = await axios.get('https://api64.ipify.org?format=json', { timeout: 3000 });
+      if (ipv6Response.data && ipv6Response.data.ip && ipv6Response.data.ip.includes(':')) {
+        ipv6 = ipv6Response.data.ip;
+      }
+    } catch (error) {
+      console.log('IPv6 service not available:', error.message);
+    }
+    
+    try {
+      const ipv4Response = await axios.get('https://api.ipify.org?format=json', { timeout: 3000 });
+      if (ipv4Response.data && ipv4Response.data.ip) {
+        ipv4 = ipv4Response.data.ip;
+      }
+    } catch (error) {
+      console.log('IPv4 service failed:', error.message);
+    }
+    
+    // Ưu tiên IPv6, fallback IPv4
+    const preferredIP = ipv6 || ipv4;
+    const ipType = ipv6 ? 'IPv6' : 'IPv4';
+    
+    // Lấy thông tin location cho IP ưu tiên
+    let locationInfo = null;
+    if (preferredIP) {
+      locationInfo = await getIPInfo(preferredIP);
+    }
+    
+    res.json({
+      success: true,
+      preferredIP: preferredIP,
+      ipType: ipType,
+      ipv6Available: ipv6,
+      ipv4Available: ipv4,
+      locationInfo: locationInfo,
+      accuracy: ipv6 ? 'High (IPv6)' : 'Standard (IPv4)'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test page for IPv6 priority
+app.get('/test-ipv6', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'test-ipv6.html'));
+});
+
+// API thống kê loại IP được tracking
+app.get('/api/ip-stats', (req, res) => {
+  db.all(`
+    SELECT 
+      CASE 
+        WHEN ip_address LIKE '%:%' AND ip_address NOT LIKE '::ffff:%' THEN 'IPv6'
+        WHEN ip_address LIKE '::ffff:%' OR ip_address NOT LIKE '%:%' THEN 'IPv4'
+        ELSE 'Unknown'
+      END as ip_type,
+      COUNT(*) as count,
+      country,
+      city
+    FROM visits 
+    WHERE visited_at >= datetime('now', '-7 days')
+    GROUP BY ip_type, country, city
+    ORDER BY count DESC
+  `, (err, stats) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    // Tính tổng và phần trăm
+    const totalVisits = stats.reduce((sum, stat) => sum + stat.count, 0);
+    const summary = stats.reduce((acc, stat) => {
+      if (!acc[stat.ip_type]) {
+        acc[stat.ip_type] = { count: 0, percentage: 0 };
+      }
+      acc[stat.ip_type].count += stat.count;
+      return acc;
+    }, {});
+    
+    // Tính phần trăm
+    Object.keys(summary).forEach(type => {
+      summary[type].percentage = totalVisits > 0 ? 
+        ((summary[type].count / totalVisits) * 100).toFixed(2) : 0;
+    });
+    
+    res.json({
+      summary: summary,
+      details: stats,
+      totalVisits: totalVisits,
+      period: 'Last 7 days'
+    });
+  });
+});
+
+// Analytics dashboard
+app.get('/analytics', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'analytics.html'));
+});
+
+// API để lấy các visit gần đây
+app.get('/api/recent-visits', (req, res) => {
+  const limit = req.query.limit || 50;
+  
+  db.all(`
+    SELECT v.*, tl.name as link_name, tl.short_path
+    FROM visits v
+    LEFT JOIN tracking_links tl ON v.link_id = tl.link_id
+    ORDER BY v.visited_at DESC
+    LIMIT ?
+  `, [limit], (err, visits) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    res.json(visits);
+  });
+});
+
 migrateDatabase();
+migrateIPType();
 
 app.listen(PORT, () => {
   console.log(`Server started on port ${PORT}`);
