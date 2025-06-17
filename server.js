@@ -77,59 +77,44 @@ db.run(`
 function migrateDatabase() {
   console.log('🔄 Checking database schema...');
   
-  // Kiểm tra xem có cột short_path không
-  db.all("PRAGMA table_info(tracking_links)", (err, columns) => {
+  // Tạo bảng migration để track các migration đã chạy
+  db.run(`CREATE TABLE IF NOT EXISTS migrations (
+    id INTEGER PRIMARY KEY,
+    migration_name TEXT UNIQUE,
+    executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // Kiểm tra xem migration đã chạy chưa
+  db.get("SELECT * FROM migrations WHERE migration_name = 'add_columns_v1'", (err, migration) => {
     if (err) {
-      console.error('Error checking table schema:', err);
+      console.error('Error checking migration:', err);
       return;
     }
     
-    const hasShortPath = columns.some(col => col.name === 'short_path');
-    const hasCustomDomain = columns.some(col => col.name === 'custom_domain');
-    const hasPreviewEnabled = columns.some(col => col.name === 'preview_enabled');
-    const hasPassword = columns.some(col => col.name === 'password');
-    const hasExpiresAt = columns.some(col => col.name === 'expires_at');
-    
-    if (!hasShortPath) {
-      console.log('➕ Adding short_path column...');
-      db.run("ALTER TABLE tracking_links ADD COLUMN short_path TEXT", (err) => {
-        if (err) console.error('Error adding short_path:', err);
-      });
+    if (migration) {
+      console.log('✅ Migration already completed');
+      return;
     }
     
-    if (!hasCustomDomain) {
-      console.log('➕ Adding custom_domain column...');
-      db.run("ALTER TABLE tracking_links ADD COLUMN custom_domain TEXT", (err) => {
-        if (err) console.error('Error adding custom_domain:', err);
-      });
-    }
+    // Chạy migration
+    console.log('🚀 Running database migration...');
     
-    if (!hasPreviewEnabled) {
-      console.log('➕ Adding preview_enabled column...');
-      db.run("ALTER TABLE tracking_links ADD COLUMN preview_enabled BOOLEAN DEFAULT 1", (err) => {
-        if (err) console.error('Error adding preview_enabled:', err);
-      });
-    }
-    
-    if (!hasPassword) {
-      console.log('➕ Adding password column...');
-      db.run("ALTER TABLE tracking_links ADD COLUMN password TEXT", (err) => {
-        if (err) console.error('Error adding password:', err);
-      });
-    }
-    
-    if (!hasExpiresAt) {
-      console.log('➕ Adding expires_at column...');
-      db.run("ALTER TABLE tracking_links ADD COLUMN expires_at DATETIME", (err) => {
-        if (err) console.error('Error adding expires_at:', err);
-        else {
-          // Migrate existing links
+    db.serialize(() => {
+      // Thêm các cột mới
+      db.run("ALTER TABLE tracking_links ADD COLUMN short_path TEXT", () => {});
+      db.run("ALTER TABLE tracking_links ADD COLUMN custom_domain TEXT", () => {});
+      db.run("ALTER TABLE tracking_links ADD COLUMN preview_enabled BOOLEAN DEFAULT 1", () => {});
+      db.run("ALTER TABLE tracking_links ADD COLUMN password TEXT", () => {});
+      db.run("ALTER TABLE tracking_links ADD COLUMN expires_at DATETIME", () => {});
+      
+      // Đánh dấu migration đã hoàn thành
+      db.run("INSERT INTO migrations (migration_name) VALUES ('add_columns_v1')", (err) => {
+        if (!err) {
+          console.log('✅ Migration completed successfully');
           migrateExistingLinks();
         }
       });
-    } else {
-      migrateExistingLinks();
-    }
+    });
   });
 }
 
@@ -299,10 +284,9 @@ app.post('/api/create-link', (req, res) => {
 // Route tracking ngắn gọn và uy tín - /:shortPath
 app.get('/:shortPath', async (req, res) => {
   const shortPath = req.params.shortPath;
-  
-  // Bỏ qua các route system
+    // Bỏ qua các route system
   if (['api', 'admin', 'track', 'details', 'favicon.ico', 'robots.txt'].includes(shortPath)) {
-    return res.next();
+    return res.status(404).render('404');
   }
   
   // Lấy thông tin link
