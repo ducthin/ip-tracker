@@ -178,40 +178,82 @@ function migrateExistingLinks() {
   });
 }
 
-// Hàm lấy thông tin IP với fallback
+// Hàm lấy thông tin IP với nhiều nguồn để tăng độ chính xác
 async function getIPInfo(ip) {
-  try {
-    // Thử ipapi.co trước
-    const response = await axios.get(`https://ipapi.co/${ip}/json/`, {
-      timeout: 5000
-    });
-    if (response.data && !response.data.error) {
-      return response.data;
+  // Danh sách các API để thử (theo độ ưu tiên)
+  const apis = [
+    {
+      name: 'ipapi.co',
+      url: `https://ipapi.co/${ip}/json/`,
+      transform: (data) => data && !data.error ? data : null
+    },
+    {
+      name: 'ip-api.com',
+      url: `http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`,
+      transform: (data) => data && data.status === 'success' ? {
+        latitude: data.lat,
+        longitude: data.lon,
+        country_name: data.country,
+        country_code: data.countryCode,
+        city: data.city,
+        region: data.regionName,
+        timezone: data.timezone,
+        zip: data.zip,
+        isp: data.isp,
+        org: data.org
+      } : null
+    },
+    {
+      name: 'ipinfo.io',
+      url: `https://ipinfo.io/${ip}/json`,
+      transform: (data) => data && !data.error ? {
+        latitude: data.loc ? parseFloat(data.loc.split(',')[0]) : null,
+        longitude: data.loc ? parseFloat(data.loc.split(',')[1]) : null,
+        country_name: data.country,
+        city: data.city,
+        region: data.region,
+        timezone: data.timezone,
+        org: data.org
+      } : null
+    },
+    {
+      name: 'freegeoip.app',
+      url: `https://freegeoip.app/json/${ip}`,
+      transform: (data) => data ? {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        country_name: data.country_name,
+        country_code: data.country_code,
+        city: data.city,
+        region: data.region_name,
+        timezone: data.time_zone,
+        zip: data.zip_code
+      } : null
     }
-  } catch (error) {
-    console.log('ipapi.co failed, trying backup service...');
-  }
-  
-  try {
-    // Fallback sang ip-api.com (free, không cần key)
-    const response = await axios.get(`http://ip-api.com/json/${ip}`, {
-      timeout: 5000
-    });
-    if (response.data && response.data.status === 'success') {
-      return {
-        latitude: response.data.lat,
-        longitude: response.data.lon,
-        country_name: response.data.country,
-        city: response.data.city,
-        region: response.data.regionName,
-        timezone: response.data.timezone
-      };
+  ];
+
+  // Thử từng API cho đến khi có kết quả
+  for (const api of apis) {
+    try {
+      const response = await axios.get(api.url, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      const result = api.transform(response.data);
+      if (result && result.latitude && result.longitude) {
+        result.source = api.name;
+        return result;
+      }
+    } catch (error) {
+      // Thử API tiếp theo
+      continue;
     }
-  } catch (error) {
-    console.log('ip-api.com also failed');
   }
-  
-  // Nếu tất cả đều fail, trả về dữ liệu mặc định
+
+  // Nếu tất cả API đều fail, trả về dữ liệu mặc định
   return {
     latitude: null,
     longitude: null,
@@ -355,14 +397,37 @@ app.get('/track/:linkId', async (req, res) => {
 
 // Hàm xử lý tracking chung
 async function processTracking(req, res, link) {
-    // Lấy IP và thông tin người dùng với xử lý tốt hơn
-    let clientIP = req.headers['x-forwarded-for'] || 
-                   req.headers['x-real-ip'] ||
-                   req.connection.remoteAddress || 
-                   req.socket.remoteAddress ||
-                   (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    // Cải thiện cách lấy IP thật của user
+    let clientIP = null;
     
-    // Xử lý trường hợp có nhiều IP trong x-forwarded-for
+    // Thử các header theo thứ tự ưu tiên
+    const ipHeaders = [
+      'cf-connecting-ip',          // Cloudflare
+      'x-real-ip',                 // Nginx
+      'x-forwarded-for',           // Load balancers
+      'x-client-ip',               // Apache
+      'x-forwarded',               // Proxy
+      'x-cluster-client-ip',       // Cluster
+      'forwarded-for',
+      'forwarded'
+    ];
+    
+    // Tìm IP từ headers
+    for (const header of ipHeaders) {
+      if (req.headers[header]) {
+        clientIP = req.headers[header];
+        break;
+      }
+    }
+    
+    // Fallback về connection IP
+    if (!clientIP) {
+      clientIP = req.connection.remoteAddress || 
+                 req.socket.remoteAddress ||
+                 (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    }
+    
+    // Xử lý trường hợp có nhiều IP trong x-forwarded-for (lấy IP đầu tiên - IP gốc)
     if (clientIP && clientIP.includes(',')) {
       clientIP = clientIP.split(',')[0].trim();
     }
@@ -371,11 +436,17 @@ async function processTracking(req, res, link) {
     if (clientIP && clientIP.substr(0, 7) === '::ffff:') {
       clientIP = clientIP.substr(7);
     }
-      const userAgent = req.headers['user-agent'];
     
-    // Thu thập thông tin âm thầm (không log ra console)    // Lấy thông tin vị trí từ IP
+    // Loại bỏ port nếu có
+    if (clientIP && clientIP.includes(':') && !clientIP.includes('::')) {
+      clientIP = clientIP.split(':')[0];
+    }
+    
+    const userAgent = req.headers['user-agent'];
+    
+    // Lấy thông tin vị trí từ IP với độ chính xác cao hơn
     let ipInfo;
-    if (clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.')) {
+    if (clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.') || clientIP.startsWith('172.')) {
       // Sử dụng IP demo để test (IP của Google)
       ipInfo = await getIPInfo('8.8.8.8');
       if (ipInfo) {
@@ -463,13 +534,34 @@ app.get('/details/:linkId', (req, res) => {
   });
 });
 
-// API để kiểm tra IP hiện tại
+// API để kiểm tra IP hiện tại với độ chính xác cao
 app.get('/api/check-ip', async (req, res) => {
-  let clientIP = req.headers['x-forwarded-for'] || 
-                 req.headers['x-real-ip'] ||
-                 req.connection.remoteAddress || 
-                 req.socket.remoteAddress ||
-                 (req.connection.socket ? req.connection.socket.remoteAddress : null);
+  // Sử dụng cùng logic với processTracking
+  let clientIP = null;
+  
+  const ipHeaders = [
+    'cf-connecting-ip',
+    'x-real-ip',
+    'x-forwarded-for',
+    'x-client-ip',
+    'x-forwarded',
+    'x-cluster-client-ip',
+    'forwarded-for',
+    'forwarded'
+  ];
+  
+  for (const header of ipHeaders) {
+    if (req.headers[header]) {
+      clientIP = req.headers[header];
+      break;
+    }
+  }
+  
+  if (!clientIP) {
+    clientIP = req.connection.remoteAddress || 
+               req.socket.remoteAddress ||
+               (req.connection.socket ? req.connection.socket.remoteAddress : null);
+  }
   
   if (clientIP && clientIP.includes(',')) {
     clientIP = clientIP.split(',')[0].trim();
@@ -477,6 +569,9 @@ app.get('/api/check-ip', async (req, res) => {
   
   if (clientIP && clientIP.substr(0, 7) === '::ffff:') {
     clientIP = clientIP.substr(7);
+  }
+    if (clientIP && clientIP.includes(':') && !clientIP.includes('::')) {
+    clientIP = clientIP.split(':')[0];
   }
   
   // Lấy IP công khai thật từ service bên ngoài
@@ -487,19 +582,21 @@ app.get('/api/check-ip', async (req, res) => {
   } catch (error) {
     console.log('Could not get public IP:', error.message);
   }
-  
-  const ipInfo = await getIPInfo(publicIP);
+    const ipInfo = await getIPInfo(publicIP);
   
   res.json({
     detectedIP: clientIP,
     publicIP: publicIP,
-    isLocalhost: clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.'),
+    isLocalhost: clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.') || clientIP.startsWith('172.'),
     locationInfo: ipInfo,
     headers: {
+      'cf-connecting-ip': req.headers['cf-connecting-ip'],
       'x-forwarded-for': req.headers['x-forwarded-for'],
       'x-real-ip': req.headers['x-real-ip'],
+      'x-client-ip': req.headers['x-client-ip'],
       'user-agent': req.headers['user-agent']
-    }
+    },
+    allHeaders: req.headers
   });
 });
 
