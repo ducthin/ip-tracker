@@ -1,0 +1,8 @@
+# Render.com Build Script
+version: 1
+build:
+  commands:
+    - npm install
+    - npm run build
+publish:
+  directory: ./
