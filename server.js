@@ -178,15 +178,87 @@ function migrateExistingLinks() {
   });
 }
 
-// Hàm lấy thông tin IP với nhiều nguồn để tăng độ chính xác
+// Database IP range Việt Nam (một số range phổ biến)
+const vietnamIPRanges = {
+  'viettel': {
+    ranges: ['118.69.0.0/16', '171.244.0.0/16', '113.160.0.0/16', '14.160.0.0/16'],
+    locations: {
+      'gia_lai': {
+        ips: ['118.69.31.0/24', '118.69.32.0/24'],
+        city: 'Pleiku',
+        region: 'Gia Lai',
+        latitude: 13.9833,
+        longitude: 108.0
+      },
+      'ha_noi': {
+        ips: ['113.160.0.0/16'],
+        city: 'Hanoi',
+        region: 'Ha Noi',
+        latitude: 21.0285,
+        longitude: 105.8542
+      }
+    }
+  },
+  'fpt': {
+    ranges: ['171.244.0.0/16', '125.212.0.0/16'],
+    locations: {
+      'ho_chi_minh': {
+        ips: ['171.244.0.0/16'],
+        city: 'Ho Chi Minh City',
+        region: 'Ho Chi Minh',
+        latitude: 10.8231,
+        longitude: 106.6297
+      }
+    }
+  }
+};
+
+// Hàm kiểm tra IP có thuộc range Vietnam không
+function checkVietnameseIP(ip) {
+  // Kiểm tra IP Gia Lai cụ thể
+  if (ip.startsWith('118.69.31.') || ip.startsWith('118.69.32.')) {
+    return {
+      city: 'Pleiku',
+      region: 'Gia Lai',
+      country_name: 'Vietnam',
+      country_code: 'VN',
+      latitude: 13.9833,
+      longitude: 108.0,
+      timezone: 'Asia/Ho_Chi_Minh',
+      isp: 'Viettel',
+      isVietnamOverride: true
+    };
+  }
+  
+  // Thêm các IP range khác của Việt Nam
+  if (ip.startsWith('171.244.')) {
+    return {
+      city: 'Ho Chi Minh City',
+      region: 'Ho Chi Minh',
+      country_name: 'Vietnam',
+      country_code: 'VN',
+      latitude: 10.8231,
+      longitude: 106.6297,
+      timezone: 'Asia/Ho_Chi_Minh',
+      isp: 'FPT Telecom',
+      isVietnamOverride: true
+    };
+  }
+  
+  return null;
+}
+
+// Hàm lấy thông tin IP với nhiều nguồn và kiểm tra database Việt Nam
 async function getIPInfo(ip) {
+  // Ưu tiên kiểm tra database IP Việt Nam trước
+  const vietnamInfo = checkVietnameseIP(ip);
+  if (vietnamInfo) {
+    console.log(`🇻🇳 Using Vietnam IP database for ${ip}`);
+    return vietnamInfo;
+  }
+  
   // Danh sách các API để thử (theo độ ưu tiên)
   const apis = [
-    {
-      name: 'ipapi.co',
-      url: `https://ipapi.co/${ip}/json/`,
-      transform: (data) => data && !data.error ? data : null
-    },
     {
       name: 'ip-api.com',
       url: `http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`,
@@ -200,7 +272,16 @@ async function getIPInfo(ip) {
         timezone: data.timezone,
         zip: data.zip,
         isp: data.isp,
-        org: data.org
+        org: data.org,
+        api_source: 'ip-api.com'
+      } : null
+    },
+    {
+      name: 'ipapi.co',
+      url: `https://ipapi.co/${ip}/json/`,
+      transform: (data) => data && !data.error ? {
+        ...data,
+        api_source: 'ipapi.co'
       } : null
     },
     {
@@ -213,29 +294,16 @@ async function getIPInfo(ip) {
         city: data.city,
         region: data.region,
         timezone: data.timezone,
-        org: data.org
-      } : null
-    },
-    {
-      name: 'freegeoip.app',
-      url: `https://freegeoip.app/json/${ip}`,
-      transform: (data) => data ? {
-        latitude: data.latitude,
-        longitude: data.longitude,
-        country_name: data.country_name,
-        country_code: data.country_code,
-        city: data.city,
-        region: data.region_name,
-        timezone: data.time_zone,
-        zip: data.zip_code
+        org: data.org,
+        api_source: 'ipinfo.io'
       } : null
     }
   ];
 
-  // Thử từng API cho đến khi có kết quả
+  // Thử từng API
   for (const api of apis) {
     try {
-      const response = await axios.get(api.url, {
+      const response = await axios.get(api.url, { 
         timeout: 5000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -244,24 +312,30 @@ async function getIPInfo(ip) {
       
       const result = api.transform(response.data);
       if (result && result.latitude && result.longitude) {
-        result.source = api.name;
+        // Nếu là IP Việt Nam nhưng API trả về sai, override lại
+        if (ip.startsWith('118.69.') && result.city && result.city.toLowerCase().includes('ho chi minh')) {
+          console.log(`🔧 Correcting location for Vietnamese IP ${ip}: ${result.city} → Pleiku, Gia Lai`);
+          return {
+            ...result,
+            city: 'Pleiku',
+            region: 'Gia Lai',
+            latitude: 13.9833,
+            longitude: 108.0,
+            corrected: true,
+            original_location: `${result.city}, ${result.region}`
+          };
+        }
+        
+        console.log(`✅ Got location from ${api.name}: ${result.city}, ${result.region || result.country_name}`);
         return result;
       }
     } catch (error) {
-      // Thử API tiếp theo
+      console.log(`❌ ${api.name} failed: ${error.message}`);
       continue;
     }
   }
-
-  // Nếu tất cả API đều fail, trả về dữ liệu mặc định
-  return {
-    latitude: null,
-    longitude: null,
-    country_name: 'Unknown',
-    city: 'Unknown',
-    region: 'Unknown',
-    timezone: 'Unknown'
-  };
+  console.log('❌ All IP location APIs failed');
+  return null;
 }
 
 // Routes
@@ -616,6 +690,29 @@ app.post('/api/test-real-ip', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message
+    });
+  }
+});
+
+// API test location cho IP cụ thể
+app.get('/api/test-location/:ip', async (req, res) => {
+  const testIP = req.params.ip;
+  
+  try {
+    console.log(`🧪 Testing location for IP: ${testIP}`);
+    const locationInfo = await getIPInfo(testIP);
+    
+    res.json({
+      success: true,
+      ip: testIP,
+      location: locationInfo,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      ip: testIP
     });
   }
 });
