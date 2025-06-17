@@ -96,23 +96,55 @@ function migrateDatabase() {
       return;
     }
     
-    // Chạy migration
+    // Chạy migration an toàn
     console.log('🚀 Running database migration...');
     
-    db.serialize(() => {
-      // Thêm các cột mới
-      db.run("ALTER TABLE tracking_links ADD COLUMN short_path TEXT", () => {});
-      db.run("ALTER TABLE tracking_links ADD COLUMN custom_domain TEXT", () => {});
-      db.run("ALTER TABLE tracking_links ADD COLUMN preview_enabled BOOLEAN DEFAULT 1", () => {});
-      db.run("ALTER TABLE tracking_links ADD COLUMN password TEXT", () => {});
-      db.run("ALTER TABLE tracking_links ADD COLUMN expires_at DATETIME", () => {});
-      
-      // Đánh dấu migration đã hoàn thành
-      db.run("INSERT INTO migrations (migration_name) VALUES ('add_columns_v1')", (err) => {
-        if (!err) {
-          console.log('✅ Migration completed successfully');
-          migrateExistingLinks();
+    // Function để thêm cột an toàn
+    const addColumnSafely = (columnName, columnDef, callback) => {
+      db.get(`PRAGMA table_info(tracking_links)`, (err, result) => {
+        if (err) {
+          console.error(`Error checking column ${columnName}:`, err);
+          return callback && callback();
         }
+        
+        // Kiểm tra xem cột đã tồn tại chưa
+        db.all(`PRAGMA table_info(tracking_links)`, (err, columns) => {
+          if (err) return callback && callback();
+          
+          const columnExists = columns.some(col => col.name === columnName);
+          
+          if (!columnExists) {
+            console.log(`➕ Adding ${columnName} column...`);
+            db.run(`ALTER TABLE tracking_links ADD COLUMN ${columnName} ${columnDef}`, (err) => {
+              if (err && !err.message.includes('duplicate column name')) {
+                console.error(`Error adding ${columnName}:`, err);
+              }
+              callback && callback();
+            });
+          } else {
+            console.log(`✅ Column ${columnName} already exists`);
+            callback && callback();
+          }
+        });
+      });
+    };
+    
+    // Thêm từng cột một cách an toàn
+    addColumnSafely('short_path', 'TEXT', () => {
+      addColumnSafely('custom_domain', 'TEXT', () => {
+        addColumnSafely('preview_enabled', 'BOOLEAN DEFAULT 1', () => {
+          addColumnSafely('password', 'TEXT', () => {
+            addColumnSafely('expires_at', 'DATETIME', () => {
+              // Đánh dấu migration đã hoàn thành
+              db.run("INSERT OR IGNORE INTO migrations (migration_name) VALUES ('add_columns_v1')", (err) => {
+                if (!err) {
+                  console.log('✅ Migration completed successfully');
+                  migrateExistingLinks();
+                }
+              });
+            });
+          });
+        });
       });
     });
   });
