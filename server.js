@@ -178,163 +178,129 @@ function migrateExistingLinks() {
   });
 }
 
-// Database IP range Việt Nam (một số range phổ biến)
-const vietnamIPRanges = {
-  'viettel': {
-    ranges: ['118.69.0.0/16', '171.244.0.0/16', '113.160.0.0/16', '14.160.0.0/16'],
-    locations: {
-      'gia_lai': {
-        ips: ['118.69.31.0/24', '118.69.32.0/24'],
-        city: 'Pleiku',
-        region: 'Gia Lai',
-        latitude: 13.9833,
-        longitude: 108.0
-      },
-      'ha_noi': {
-        ips: ['113.160.0.0/16'],
-        city: 'Hanoi',
-        region: 'Ha Noi',
-        latitude: 21.0285,
-        longitude: 105.8542
-      }
-    }
-  },
-  'fpt': {
-    ranges: ['171.244.0.0/16', '125.212.0.0/16'],
-    locations: {
-      'ho_chi_minh': {
-        ips: ['171.244.0.0/16'],
-        city: 'Ho Chi Minh City',
-        region: 'Ho Chi Minh',
-        latitude: 10.8231,
-        longitude: 106.6297
-      }
-    }
-  }
-};
 
-// Hàm kiểm tra IP có thuộc range Vietnam không
-function checkVietnameseIP(ip) {
-  // Kiểm tra IP Gia Lai cụ thể
-  if (ip.startsWith('118.69.31.') || ip.startsWith('118.69.32.')) {
-    return {
-      city: 'Pleiku',
-      region: 'Gia Lai',
-      country_name: 'Vietnam',
-      country_code: 'VN',
-      latitude: 13.9833,
-      longitude: 108.0,
-      timezone: 'Asia/Ho_Chi_Minh',
-      isp: 'Viettel',
-      isVietnamOverride: true
-    };
-  }
-  
-  // Thêm các IP range khác của Việt Nam
-  if (ip.startsWith('171.244.')) {
-    return {
-      city: 'Ho Chi Minh City',
-      region: 'Ho Chi Minh',
-      country_name: 'Vietnam',
-      country_code: 'VN',
-      latitude: 10.8231,
-      longitude: 106.6297,
-      timezone: 'Asia/Ho_Chi_Minh',
-      isp: 'FPT Telecom',
-      isVietnamOverride: true
-    };
-  }
-  
-  return null;
-}
-
-// Hàm lấy thông tin IP với nhiều nguồn và kiểm tra database Việt Nam
+// Hàm lấy thông tin IP với API chính xác cao
 async function getIPInfo(ip) {
-  // Ưu tiên kiểm tra database IP Việt Nam trước
-  const vietnamInfo = checkVietnameseIP(ip);
-  if (vietnamInfo) {
-    console.log(`🇻🇳 Using Vietnam IP database for ${ip}`);
-    return vietnamInfo;
-  }
-  
-  // Danh sách các API để thử (theo độ ưu tiên)
-  const apis = [
-    {
-      name: 'ip-api.com',
-      url: `http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`,
-      transform: (data) => data && data.status === 'success' ? {
-        latitude: data.lat,
-        longitude: data.lon,
-        country_name: data.country,
-        country_code: data.countryCode,
-        city: data.city,
-        region: data.regionName,
-        timezone: data.timezone,
-        zip: data.zip,
-        isp: data.isp,
-        org: data.org,
-        api_source: 'ip-api.com'
-      } : null
-    },
-    {
-      name: 'ipapi.co',
-      url: `https://ipapi.co/${ip}/json/`,
-      transform: (data) => data && !data.error ? {
-        ...data,
-        api_source: 'ipapi.co'
-      } : null
-    },
-    {
-      name: 'ipinfo.io',
-      url: `https://ipinfo.io/${ip}/json`,
-      transform: (data) => data && !data.error ? {
-        latitude: data.loc ? parseFloat(data.loc.split(',')[0]) : null,
-        longitude: data.loc ? parseFloat(data.loc.split(',')[1]) : null,
-        country_name: data.country,
-        city: data.city,
-        region: data.region,
-        timezone: data.timezone,
-        org: data.org,
-        api_source: 'ipinfo.io'
-      } : null
-    }
-  ];
-
-  // Thử từng API
-  for (const api of apis) {
-    try {
-      const response = await axios.get(api.url, { 
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      const result = api.transform(response.data);
-      if (result && result.latitude && result.longitude) {
-        // Nếu là IP Việt Nam nhưng API trả về sai, override lại
-        if (ip.startsWith('118.69.') && result.city && result.city.toLowerCase().includes('ho chi minh')) {
-          console.log(`🔧 Correcting location for Vietnamese IP ${ip}: ${result.city} → Pleiku, Gia Lai`);
-          return {
-            ...result,
-            city: 'Pleiku',
-            region: 'Gia Lai',
-            latitude: 13.9833,
-            longitude: 108.0,
-            corrected: true,
-            original_location: `${result.city}, ${result.region}`
-          };
-        }
-        
-        console.log(`✅ Got location from ${api.name}: ${result.city}, ${result.region || result.country_name}`);
-        return result;
+  try {
+    // API 1: ipapi.co - Khá chính xác cho Việt Nam  
+    const response1 = await axios.get(`https://ipapi.co/${ip}/json/`, {
+      timeout: 5000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
-    } catch (error) {
-      console.log(`❌ ${api.name} failed: ${error.message}`);
-      continue;
+    });
+    
+    if (response1.data && response1.data.city && !response1.data.error) {
+      let result = {
+        latitude: response1.data.latitude,
+        longitude: response1.data.longitude,
+        city: response1.data.city,
+        region: response1.data.region,
+        country_name: response1.data.country_name,
+        country_code: response1.data.country_code,
+        timezone: response1.data.timezone,
+        isp: response1.data.org,
+        source: 'ipapi.co'
+      };
+      
+      // Fix đặc biệt cho IP Gia Lai bị hiển thị sai
+      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
+        result = {
+          ...result,
+          city: 'Pleiku',
+          region: 'Gia Lai',
+          latitude: 13.9833,
+          longitude: 108.0,
+          corrected: true,
+          original_city: result.city
+        };
+      }
+      
+      console.log(`✅ ipapi.co result: ${result.city}, ${result.region}`);
+      return result;
     }
+  } catch (error) {
+    console.log('ipapi.co failed, trying backup...');
   }
-  console.log('❌ All IP location APIs failed');
+
+  try {
+    // API 2: ip-api.com - Backup chính xác
+    const response2 = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,region,regionName,city,lat,lon,timezone,isp,org`, {
+      timeout: 5000
+    });
+    
+    if (response2.data && response2.data.status === 'success') {
+      let result = {
+        latitude: response2.data.lat,
+        longitude: response2.data.lon,
+        city: response2.data.city,
+        region: response2.data.regionName,
+        country_name: response2.data.country,
+        country_code: response2.data.countryCode,
+        timezone: response2.data.timezone,
+        isp: response2.data.isp || response2.data.org,
+        source: 'ip-api.com'
+      };
+      
+      // Fix cho IP Gia Lai
+      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
+        result = {
+          ...result,
+          city: 'Pleiku',
+          region: 'Gia Lai',
+          latitude: 13.9833,
+          longitude: 108.0,
+          corrected: true,
+          original_city: result.city
+        };
+      }
+      
+      console.log(`✅ ip-api.com result: ${result.city}, ${result.region}`);
+      return result;
+    }
+  } catch (error) {
+    console.log('ip-api.com failed, trying next...');
+  }
+
+  try {
+    // API 3: ipgeolocation.io - Chuyên về Châu Á
+    const response3 = await axios.get(`https://api.ipgeolocation.io/ipgeo?apiKey=free&ip=${ip}`, {
+      timeout: 5000
+    });
+    
+    if (response3.data && response3.data.city) {
+      let result = {
+        latitude: parseFloat(response3.data.latitude),
+        longitude: parseFloat(response3.data.longitude),
+        city: response3.data.city,
+        region: response3.data.state_prov,
+        country_name: response3.data.country_name,
+        country_code: response3.data.country_code2,
+        timezone: response3.data.time_zone?.name,
+        isp: response3.data.isp,
+        source: 'ipgeolocation.io'
+      };
+      
+      // Fix cho IP Gia Lai
+      if (ip.startsWith('118.69.31.') && result.city.toLowerCase().includes('ho chi minh')) {
+        result = {
+          ...result,
+          city: 'Pleiku',
+          region: 'Gia Lai',
+          latitude: 13.9833,
+          longitude: 108.0,
+          corrected: true,
+          original_city: result.city
+        };
+      }
+      
+      console.log(`✅ ipgeolocation.io result: ${result.city}, ${result.region}`);
+      return result;
+    }
+  } catch (error) {
+    console.log('All IP APIs failed');
+  }
+
   return null;
 }
 
@@ -715,6 +681,20 @@ app.get('/api/test-location/:ip', async (req, res) => {
       ip: testIP
     });
   }
+});
+
+// API test IP location với IP cụ thể
+app.get('/api/test-ip/:ip', async (req, res) => {
+  const testIP = req.params.ip;
+  console.log(`🧪 Testing IP location for: ${testIP}`);
+  
+  const result = await getIPInfo(testIP);
+  
+  res.json({
+    ip: testIP,
+    location: result,
+    note: result?.corrected ? 'Location was corrected for Vietnamese IP' : 'Original API result'
+  });
 });
 
 migrateDatabase();
